@@ -11,6 +11,11 @@ from pathlib import Path
 API_BASE = "https://api.telegram.org/bot{token}"
 
 
+def _mask_token(msg: str, token: str) -> str:
+    """Replace the bot token in error messages to avoid leaking it to logs."""
+    return msg.replace(token, "***") if token else msg
+
+
 def send_message(token: str, chat_id: str, text: str, logger: logging.Logger) -> bool:
     """Send a plain-text message. Returns True on success."""
     url = f"{API_BASE.format(token=token)}/sendMessage"
@@ -21,7 +26,7 @@ def send_message(token: str, chat_id: str, text: str, logger: logging.Logger) ->
             logger.info(f"[telegram] sendMessage OK (HTTP {resp.status})")
             return True
     except (urllib.error.URLError, OSError) as exc:
-        logger.warning(f"[telegram] sendMessage failed: {exc}")
+        logger.warning("[telegram] sendMessage failed: %s", _mask_token(str(exc), token))
         return False
 
 
@@ -66,5 +71,5 @@ def send_photo(
             logger.info(f"[telegram] sendPhoto OK (HTTP {resp.status})")
             return True
     except (urllib.error.URLError, OSError) as exc:
-        logger.warning(f"[telegram] sendPhoto failed: {exc}")
+        logger.warning("[telegram] sendPhoto failed: %s", _mask_token(str(exc), token))
         return False

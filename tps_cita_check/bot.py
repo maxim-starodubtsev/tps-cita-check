@@ -12,7 +12,7 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
-API_BASE = "https://api.telegram.org/bot{token}"
+from .telegram import API_BASE, _mask_token
 
 _log = logging.getLogger(__name__)
 

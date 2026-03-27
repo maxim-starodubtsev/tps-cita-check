@@ -359,7 +359,11 @@ def _run_once(
                 time.sleep(cooldown_s)
                 # Reload the start URL so the next office gets a brand-new TSPD
                 # session cookie from the WAF (cookie jar was cleared above).
-                page.goto(config.start_url, wait_until="load", timeout=config.step_timeout_ms)
+                try:
+                    page.goto(config.start_url, wait_until="load", timeout=config.step_timeout_ms)
+                except Exception as e:
+                    logger.warning(f"[runner] Navigation after cooldown failed: {e}")
+                    break
                 res_prov = _run_step(Step1VerifyProvince())
                 if res_prov.status != StepStatus.OK:
                     logger.error("[runner] Province re-verification failed after navigating back")

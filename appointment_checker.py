@@ -33,7 +33,7 @@ def main() -> None:
     parser.add_argument("--province-code", default=os.getenv("CITA_PROVINCE_CODE", "29"))
     parser.add_argument(
         "--office-label",
-        default=os.getenv("CITA_OFFICE_LABEL", "CNP Torremolinos, Calle Skal, 12, Torremolinos"),
+        default=os.getenv("CITA_OFFICE_LABEL"),  # None → CheckerConfig.office_labels default applies
         help="Single office to check (use --offices for multiple offices)",
     )
     parser.add_argument(
@@ -93,17 +93,20 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    # Build ordered office list: --offices wins; fall back to single --office-label.
+    # Build ordered office list: --offices wins; fall back to single --office-label;
+    # if neither given, CheckerConfig uses its own default.
     # Offices are separated by "|" (pipe) because office names contain commas.
     if args.offices:
-        office_labels = tuple(o.strip() for o in args.offices.split("|") if o.strip())
-    else:
+        office_labels: tuple | None = tuple(o.strip() for o in args.offices.split("|") if o.strip())
+    elif args.office_label:
         office_labels = (args.office_label,)
+    else:
+        office_labels = None  # let CheckerConfig supply its default
 
     cfg = CheckerConfig(
         province_code=args.province_code,
         province_label=args.province_label,
-        office_labels=office_labels,
+        **({} if office_labels is None else {"office_labels": office_labels}),
         tramite_contains=args.tramite_contains,
         nie=args.nie,
         full_name=args.name,

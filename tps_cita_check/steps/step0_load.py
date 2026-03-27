@@ -26,6 +26,7 @@ class Step0Load(Step):
 
                 if is_fortigate_block(page):
                     log.warning(f"[{self.step_id}] FortiGate block detected on attempt {attempt}.")
+                    last_error = RuntimeError("Session blocked: FortiGate Intrusion Prevention")
                 elif is_session_expired(page):
                     log.warning(f"[{self.step_id}] Session expired detected on attempt {attempt}.")
                     raise RuntimeError("Session expired: sesión ha caducado")

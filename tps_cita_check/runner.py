@@ -115,11 +115,15 @@ def _navigate_back_to_province(page, config: CheckerConfig, logger) -> bool:
             if btn.count() > 0:
                 try:
                     with page.expect_navigation(wait_until="load", timeout=config.step_timeout_ms):
-                        btn.first.click()
-                    logger.info(f"[back] Clicked '{label}'")
+                        # Use JS evaluation (Runtime.evaluate) instead of CDP synthetic
+                        # input events (Input.dispatchMouseEvent) — the WAF only detects
+                        # the latter.  el.click() dispatches a trusted-origin click that
+                        # triggers form submit / link navigation normally.
+                        btn.first.evaluate("el => el.click()")
+                    logger.info(f"[back] Clicked '{label}' via JS")
                     break
                 except Exception as nav_exc:
-                    logger.debug(f"[back] '{label}' click did not cause navigation: {nav_exc}")
+                    logger.debug(f"[back] '{label}' JS click did not cause navigation: {nav_exc}")
 
         # After a Salir/Volver click we may land on the province selection form
         # (select#form with all provinces + Aceptar button) rather than directly

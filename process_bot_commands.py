@@ -34,4 +34,6 @@ try:
             offset_path=Path("artifacts/bot_offset.txt"),
         )
 except Exception:
-    pass  # Never crash the scheduler
+    # Never crash the scheduler, but make the failure observable.
+    import logging
+    logging.getLogger(__name__).warning("Bot command processing failed", exc_info=True)

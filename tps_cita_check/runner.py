@@ -169,6 +169,162 @@ def _clear_tspd_cookies(context, logger) -> None:
         logger.warning(f"[runner] TSPD cookie clear failed (non-fatal): {exc}")
 
 
+def _launch_context(config: CheckerConfig, p, logger):
+    """Launch browser with Chrome extension + stealth. Returns (context, page)."""
+    ext_dir = str(config.resolved_extension_dir)
+    profile_dir = str(config.resolved_chrome_profile_dir)
+    # Extensions require a real browser. Use --headless=new (Chrome 112+) for
+    # invisible mode with full extension support; fall back to visible for debugging.
+    headless_args = [] if not config.headless else ["--headless=new"]
+    # headless=False is intentional here: the Playwright API parameter must be
+    # False so the persistent context initialises in "headed" mode, which is
+    # required for Chrome extensions. When config.headless is True, we inject
+    # --headless=new via args to get Chrome's "new headless" mode that still
+    # supports extensions. The CLI flag overrides the API parameter.
+    context = p.chromium.launch_persistent_context(
+        profile_dir,
+        headless=False,
+        args=[
+            "--disable-blink-features=AutomationControlled",
+            f"--disable-extensions-except={ext_dir}",
+            f"--load-extension={ext_dir}",
+            *headless_args,
+        ],
+        viewport={"width": 1280, "height": 720},
+        locale="es-ES",
+        user_agent=config.user_agent,
+        ignore_https_errors=config.ignore_https_errors,
+    )
+    if config.stealth_enabled:
+        apply_stealth_sync(context)
+        logger.info("Stealth evasion scripts injected")
+    page = context.pages[0] if context.pages else context.new_page()
+    return context, page
+
+
+def _run_office_loop(
+    *,
+    ctx: RunContext,
+    config: CheckerConfig,
+    start_office_idx: int,
+    _run_step,
+    logger,
+) -> tuple:
+    """Iterate over offices from start_office_idx, running steps 2-8 for each.
+
+    Returns (found_cita_office, completed_normally, office_results).
+    """
+    offices = config.office_labels
+    inner_step_classes = [
+        Step3SelectTramite,
+        Step4Accept,
+        Step5Entrar,
+        Step6FillPersonalData,
+        Step7SolicitarCita,
+        Step8FillContactInfo,
+    ]
+
+    office_results: list[dict] = []
+    found_cita_office: str | None = None
+    completed_normally = False
+    page = ctx.page
+
+    for office_idx, office_label in enumerate(offices):
+        if office_idx < start_office_idx:
+            continue  # already processed in a previous attempt
+        is_last_office = office_idx == len(offices) - 1
+        ctx.office_idx = office_idx
+        logger.info(
+            f"[runner] Office {office_idx + 1}/{len(offices)}: {office_label}"
+        )
+
+        # Step 2: select this specific office.
+        res2 = _run_step(Step2SelectOffice(office_label=office_label))
+        if res2.status != StepStatus.OK:
+            office_results.append({"label": office_label, "status": "error"})
+            break
+
+        # Steps 3–8 for this office.
+        office_error = False
+        step7_result: StepResult | None = None
+        step8_result: StepResult | None = None
+        for StepClass in inner_step_classes:
+            res = _run_step(StepClass())
+            if res.status != StepStatus.OK:
+                office_error = True
+                break
+            if res.step_id == "step7":
+                step7_result = res
+            elif res.step_id == "step8":
+                step8_result = res
+
+        if office_error:
+            office_results.append({"label": office_label, "status": "error"})
+            break  # Hard failure — stop everything.
+
+        # Step8 is authoritative when it ran; fall back to step7.
+        # step8 always runs but returns no screenshot when the contact form was
+        # absent (result page was already present after step7).
+        final_step = step8_result or step7_result
+
+        # Log the best available screenshot for this office.
+        best_screenshot = (
+            (step8_result.screenshot if step8_result and step8_result.screenshot else None)
+            or (step7_result.screenshot if step7_result and step7_result.screenshot else None)
+        )
+        if best_screenshot:
+            logger.info(
+                f"[runner] Office {office_idx + 1} screenshot: {best_screenshot}"
+            )
+
+        # Determine appointment availability.
+        no_citas = (
+            final_step.data.get("no_citas")
+            if final_step and final_step.data
+            else None
+        )
+
+        if no_citas is False:
+            # Appointment is available at this office!
+            office_results.append({"label": office_label, "status": "cita_found"})
+            found_cita_office = office_label
+            completed_normally = True
+            logger.info(f"[runner] Appointment AVAILABLE at: {office_label}")
+            break
+
+        office_results.append({"label": office_label, "status": "no_citas"})
+        logger.info(f"[runner] No appointments at: {office_label}")
+
+        if is_last_office:
+            completed_normally = True
+        else:
+            # Navigate back to province/office page and re-verify province.
+            back_ok = _navigate_back_to_province(page, config, logger)
+            if not back_ok:
+                logger.error("[runner] Back navigation failed; stopping office loop")
+                break
+            # Clear TSPD tracking cookies so the next office starts with a
+            # fresh WAF session counter (prevents cumulative-request blocking).
+            _clear_tspd_cookies(ctx.context, logger)
+            # Inter-office cooldown: 30–60s to avoid time-windowed rate limits.
+            cooldown_s = random.uniform(30, 60)
+            logger.info(f"[runner] Inter-office cooldown: {cooldown_s:.1f}s")
+            time.sleep(cooldown_s)
+            # Reload the start URL so the next office gets a brand-new TSPD
+            # session cookie from the WAF (cookie jar was cleared above).
+            try:
+                page.goto(config.start_url, wait_until="load", timeout=config.step_timeout_ms)
+            except Exception as e:
+                logger.warning(f"[runner] Navigation after cooldown failed: {e}")
+                break
+            res_prov = _run_step(Step1VerifyProvince())
+            if res_prov.status != StepStatus.OK:
+                logger.error("[runner] Province re-verification failed after navigating back")
+                break
+
+    return found_cita_office, completed_normally, office_results
+
+
 def _run_once(
     *,
     config: CheckerConfig,
@@ -180,7 +336,7 @@ def _run_once(
     """Execute the full step pipeline once (single browser session).
 
     Normal mode (``_override_steps=None``): runs Step0 + Step1 once, then
-    iterates over config.office_labels starting from ``start_office_idx``.
+    iterates over config.office_labels via _run_office_loop().
 
     Legacy/test mode (``_override_steps`` provided): runs the given steps in
     order and stops on first failure (mirrors the old sequential behaviour).
@@ -189,41 +345,9 @@ def _run_once(
     ctx.ensure_artifact_dirs()
 
     results: list[StepResult] = []
-    found_cita_office: str | None = None
-    completed_normally = False
-
-    ext_dir = str(config.resolved_extension_dir)
-    profile_dir = str(config.resolved_chrome_profile_dir)
 
     with sync_playwright() as p:
-        # Extensions require a real browser. Use --headless=new (Chrome 112+) for
-        # invisible mode with full extension support; fall back to visible for debugging.
-        headless_args = [] if not config.headless else ["--headless=new"]
-        # headless=False is intentional here: the Playwright API parameter must be
-        # False so the persistent context initialises in "headed" mode, which is
-        # required for Chrome extensions. When config.headless is True, we inject
-        # --headless=new via args to get Chrome's "new headless" mode that still
-        # supports extensions. The CLI flag overrides the API parameter.
-        context = p.chromium.launch_persistent_context(
-            profile_dir,
-            headless=False,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                f"--disable-extensions-except={ext_dir}",
-                f"--load-extension={ext_dir}",
-                *headless_args,
-            ],
-            viewport={"width": 1280, "height": 720},
-            locale="es-ES",
-            user_agent=config.user_agent,
-            ignore_https_errors=config.ignore_https_errors,
-        )
-
-        if config.stealth_enabled:
-            apply_stealth_sync(context)
-            logger.info("Stealth evasion scripts injected")
-
-        page = context.pages[0] if context.pages else context.new_page()
+        context, page = _launch_context(config, p, logger)
         ctx.context = context
         ctx.page = page
 
@@ -264,110 +388,13 @@ def _run_once(
                 return RunSummary(ok=False, results=results)
 
         # ── Phase 2: per-office loop ──────────────────────────────────────────────
-        offices = config.office_labels
-        inner_step_classes = [
-            Step3SelectTramite,
-            Step4Accept,
-            Step5Entrar,
-            Step6FillPersonalData,
-            Step7SolicitarCita,
-            Step8FillContactInfo,
-        ]
-
-        office_results: list[dict] = []
-
-        for office_idx, office_label in enumerate(offices):
-            if office_idx < start_office_idx:
-                continue  # already processed in a previous attempt
-            is_last_office = office_idx == len(offices) - 1
-            ctx.office_idx = office_idx
-            logger.info(
-                f"[runner] Office {office_idx + 1}/{len(offices)}: {office_label}"
-            )
-
-            # Step 2: select this specific office.
-            res2 = _run_step(Step2SelectOffice(office_label=office_label))
-            if res2.status != StepStatus.OK:
-                office_results.append({"label": office_label, "status": "error"})
-                break
-
-            # Steps 3–8 for this office.
-            office_error = False
-            step7_result: StepResult | None = None
-            step8_result: StepResult | None = None
-            for StepClass in inner_step_classes:
-                res = _run_step(StepClass())
-                if res.status != StepStatus.OK:
-                    office_error = True
-                    break
-                if res.step_id == "step7":
-                    step7_result = res
-                elif res.step_id == "step8":
-                    step8_result = res
-
-            if office_error:
-                office_results.append({"label": office_label, "status": "error"})
-                break  # Hard failure — stop everything.
-
-            # Step8 is authoritative when it ran; fall back to step7.
-            # step8 always runs but returns no screenshot when the contact form was
-            # absent (result page was already present after step7).
-            final_step = step8_result or step7_result
-
-            # Log the best available screenshot for this office.
-            best_screenshot = (
-                (step8_result.screenshot if step8_result and step8_result.screenshot else None)
-                or (step7_result.screenshot if step7_result and step7_result.screenshot else None)
-            )
-            if best_screenshot:
-                logger.info(
-                    f"[runner] Office {office_idx + 1} screenshot: {best_screenshot}"
-                )
-
-            # Determine appointment availability.
-            no_citas = (
-                final_step.data.get("no_citas")
-                if final_step and final_step.data
-                else None
-            )
-
-            if no_citas is False:
-                # Appointment is available at this office!
-                office_results.append({"label": office_label, "status": "cita_found"})
-                found_cita_office = office_label
-                completed_normally = True
-                logger.info(f"[runner] Appointment AVAILABLE at: {office_label}")
-                break
-
-            office_results.append({"label": office_label, "status": "no_citas"})
-            logger.info(f"[runner] No appointments at: {office_label}")
-
-            if is_last_office:
-                completed_normally = True
-            else:
-                # Navigate back to province/office page and re-verify province.
-                back_ok = _navigate_back_to_province(page, config, logger)
-                if not back_ok:
-                    logger.error("[runner] Back navigation failed; stopping office loop")
-                    break
-                # Clear TSPD tracking cookies so the next office starts with a
-                # fresh WAF session counter (prevents cumulative-request blocking).
-                _clear_tspd_cookies(ctx.context, logger)
-                # Inter-office cooldown: 30–60s to avoid time-windowed rate limits.
-                cooldown_s = random.uniform(30, 60)
-                logger.info(f"[runner] Inter-office cooldown: {cooldown_s:.1f}s")
-                time.sleep(cooldown_s)
-                # Reload the start URL so the next office gets a brand-new TSPD
-                # session cookie from the WAF (cookie jar was cleared above).
-                try:
-                    page.goto(config.start_url, wait_until="load", timeout=config.step_timeout_ms)
-                except Exception as e:
-                    logger.warning(f"[runner] Navigation after cooldown failed: {e}")
-                    break
-                res_prov = _run_step(Step1VerifyProvince())
-                if res_prov.status != StepStatus.OK:
-                    logger.error("[runner] Province re-verification failed after navigating back")
-                    break
+        found_cita_office, completed_normally, office_results = _run_office_loop(
+            ctx=ctx,
+            config=config,
+            start_office_idx=start_office_idx,
+            _run_step=_run_step,
+            logger=logger,
+        )
 
         context.close()
 

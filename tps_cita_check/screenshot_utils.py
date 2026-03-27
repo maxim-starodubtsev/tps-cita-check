@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
-
 from PIL import Image
 
 
@@ -55,7 +53,6 @@ def save_debug_screenshot(
     full_page: bool,
     width_px: int,
     max_height_px: int,
-    quality: Optional[int] = None,
 ) -> ScreenshotResult:
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / filename

@@ -4,23 +4,11 @@
 import os
 from pathlib import Path
 
-
-def _load_dotenv(path: str = ".env") -> None:
-    env_path = Path(path)
-    if not env_path.is_file():
-        return
-    for line in env_path.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        key = key.strip()
-        value = value.strip().strip("\"'")
-        os.environ.setdefault(key, value)
+from tps_cita_check.env_utils import load_dotenv
 
 
 try:
-    _load_dotenv()
+    load_dotenv()
     token = os.getenv("CITA_TELEGRAM_BOT_TOKEN", "")
     chat_id = os.getenv("CITA_TELEGRAM_CHAT_ID", "")
     if token and chat_id:

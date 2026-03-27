@@ -1,0 +1,4 @@
+playwright
+Pillow
+pytest
+pytest-mock

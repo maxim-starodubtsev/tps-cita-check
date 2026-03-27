@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "Cita Auto Fill",
+  "version": "1.0",
+  "description": "Automates form filling on Cita Previa Extranjería",
+  "content_scripts": [
+    {
+      "matches": ["https://icp.administracionelectronica.gob.es/icpco/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

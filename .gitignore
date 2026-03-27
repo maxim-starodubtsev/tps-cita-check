@@ -1,0 +1,8 @@
+.env
+.venv/
+artifacts/
+__pycache__/
+*.pyc
+.DS_Store
+scheduler/com.tps.cita-check.plist
+.claude/settings.local.json

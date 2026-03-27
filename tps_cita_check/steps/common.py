@@ -101,6 +101,56 @@ def retry_step(fn, *, attempts: int, backoff_ms: int, logger, step_id: str, labe
     raise last_exc  # type: ignore[misc]
 
 
+def _try_screenshot(step_id: str, ctx, suffix: str):
+    """Attempt to take a screenshot, returning the path or None on failure."""
+    try:
+        from ..screenshot_utils import save_debug_screenshot
+        shot = save_debug_screenshot(
+            page=ctx.page,
+            out_dir=ctx.run_screenshots_dir,
+            filename=f"{step_id}_{suffix}.png",
+            full_page=True,
+            width_px=ctx.config.screenshot_width_px,
+            max_height_px=ctx.config.screenshot_max_height_px,
+        )
+        return str(shot.path)
+    except Exception as exc:
+        ctx.logger.debug(f"[{step_id}] Screenshot on error failed: {exc}")
+        return None
+
+
+def run_step_safely(step_id: str, title: str, ctx, inner_fn):
+    """Wrap a step's core logic with standardised error handling + screenshot.
+
+    *inner_fn* receives *ctx* and must return a StepResult on success.
+    Timeout and generic exceptions are caught, a screenshot is taken, and a
+    FAIL StepResult is returned — the step never raises.
+    """
+    from ..step_framework import StepResult, StepStatus
+    try:
+        return inner_fn(ctx)
+    except PlaywrightTimeout as exc:
+        screenshot = _try_screenshot(step_id, ctx, "timeout")
+        return StepResult(
+            step_id=step_id,
+            status=StepStatus.FAIL,
+            message=f"{title} timed out",
+            screenshot=screenshot,
+            error_type=type(exc).__name__,
+            error_details=str(exc),
+        )
+    except Exception as exc:
+        screenshot = _try_screenshot(step_id, ctx, "error")
+        return StepResult(
+            step_id=step_id,
+            status=StepStatus.FAIL,
+            message=f"{title} failed",
+            screenshot=screenshot,
+            error_type=type(exc).__name__,
+            error_details=str(exc),
+        )
+
+
 __all__ = [
     "PlaywrightTimeout",
     "ensure_not_rejected",
@@ -111,6 +161,7 @@ __all__ = [
     "is_session_expired",
     "is_system_error",
     "retry_step",
+    "run_step_safely",
     "wait_network_idle",
 ]
 

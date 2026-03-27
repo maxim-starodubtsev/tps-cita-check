@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from ..screenshot_utils import save_debug_screenshot
 from ..step_framework import Step, StepResult, StepStatus
-from .common import PlaywrightTimeout, ensure_not_rejected, retry_step
+from .common import ensure_not_rejected, retry_step, run_step_safely
 
 
 class Step2SelectOffice(Step):
@@ -15,6 +15,9 @@ class Step2SelectOffice(Step):
         self._office_label = office_label
 
     def run(self, ctx) -> StepResult:
+        return run_step_safely(self.step_id, self.title, ctx, self._inner_run)
+
+    def _inner_run(self, ctx) -> StepResult:
         log = ctx.logger
         cfg = ctx.config
         page = ctx.page
@@ -54,71 +57,27 @@ class Step2SelectOffice(Step):
 
             ensure_not_rejected(self.step_id, page, log)
 
-        try:
-            retry_step(
-                _attempt,
-                attempts=cfg.step_retry_attempts,
-                backoff_ms=cfg.step_retry_backoff_ms,
-                logger=log,
-                step_id=self.step_id,
-                label="Office selection",
-            )
+        retry_step(
+            _attempt,
+            attempts=cfg.step_retry_attempts,
+            backoff_ms=cfg.step_retry_backoff_ms,
+            logger=log,
+            step_id=self.step_id,
+            label="Office selection",
+        )
 
-            shot = save_debug_screenshot(
-                page=page,
-                out_dir=ctx.run_screenshots_dir,
-                filename=f"{self.step_id}_office_selected.png",
-                full_page=cfg.screenshot_full_page,
-                width_px=cfg.screenshot_width_px,
-                max_height_px=cfg.screenshot_max_height_px,
-            )
-            return StepResult(
-                step_id=self.step_id,
-                status=StepStatus.OK,
-                message="Office selected",
-                screenshot=str(shot.path),
-                data={"url_after": page.url},
-            )
-        except PlaywrightTimeout as e:
-            try:
-                shot = save_debug_screenshot(
-                    page=page,
-                    out_dir=ctx.run_screenshots_dir,
-                    filename=f"{self.step_id}_timeout.png",
-                    full_page=True,
-                    width_px=cfg.screenshot_width_px,
-                    max_height_px=cfg.screenshot_max_height_px,
-                )
-                screenshot = str(shot.path)
-            except Exception:
-                screenshot = None
-            return StepResult(
-                step_id=self.step_id,
-                status=StepStatus.FAIL,
-                message="Office selection timed out",
-                screenshot=screenshot,
-                error_type=type(e).__name__,
-                error_details=str(e),
-            )
-        except Exception as e:
-            try:
-                shot = save_debug_screenshot(
-                    page=page,
-                    out_dir=ctx.run_screenshots_dir,
-                    filename=f"{self.step_id}_error.png",
-                    full_page=True,
-                    width_px=cfg.screenshot_width_px,
-                    max_height_px=cfg.screenshot_max_height_px,
-                )
-                screenshot = str(shot.path)
-            except Exception:
-                screenshot = None
-            return StepResult(
-                step_id=self.step_id,
-                status=StepStatus.FAIL,
-                message="Office selection failed",
-                screenshot=screenshot,
-                error_type=type(e).__name__,
-                error_details=str(e),
-            )
-
+        shot = save_debug_screenshot(
+            page=page,
+            out_dir=ctx.run_screenshots_dir,
+            filename=f"{self.step_id}_office_selected.png",
+            full_page=cfg.screenshot_full_page,
+            width_px=cfg.screenshot_width_px,
+            max_height_px=cfg.screenshot_max_height_px,
+        )
+        return StepResult(
+            step_id=self.step_id,
+            status=StepStatus.OK,
+            message="Office selected",
+            screenshot=str(shot.path),
+            data={"url_after": page.url},
+        )

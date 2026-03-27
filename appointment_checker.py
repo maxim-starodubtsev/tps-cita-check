@@ -174,18 +174,21 @@ def main() -> None:
             exit_code = 2
         elif not summary.ok:
             # Run failed — send error details + screenshot
-            last = summary.results[-1]
-            error_text = (
-                f"Run failed at {last.step_id}\n"
-                f"{last.message}\n"
-                f"Error: {last.error_type}: {last.error_details}\n\n"
-                f"If the scheduler has stopped, restart it with:\n"
-                f"bash scheduler/run.sh --resume"
-            )
-            if last.screenshot:
-                send_photo(token, chat_id, last.screenshot, caption=error_text, logger=logger)
+            if summary.results:
+                last = summary.results[-1]
+                error_text = (
+                    f"Run failed at {last.step_id}\n"
+                    f"{last.message}\n"
+                    f"Error: {last.error_type}: {last.error_details}\n\n"
+                    f"If the scheduler has stopped, restart it with:\n"
+                    f"bash scheduler/run.sh --resume"
+                )
+                if last.screenshot:
+                    send_photo(token, chat_id, last.screenshot, caption=error_text, logger=logger)
+                else:
+                    send_message(token, chat_id, error_text, logger=logger)
             else:
-                send_message(token, chat_id, error_text, logger=logger)
+                send_message(token, chat_id, "Run failed: no steps completed", logger=logger)
 
     sys.exit(exit_code)
 

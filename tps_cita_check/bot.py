@@ -173,6 +173,18 @@ def _handle_status(state_path: Path, run_history_path: Path) -> str:
         _last_run_line(run_history_path),
     ]
     lines.extend(_office_lines(run_history_path))
+
+    # OPS-3: Warn if the launchd scheduler hasn't woken in > 2 hours.
+    wake_file = state_path.parent / "last_scheduler_wake.txt"
+    if wake_file.exists():
+        try:
+            last_wake = int(wake_file.read_text().strip())
+            age_min = (int(time.time()) - last_wake) // 60
+            if age_min > 120:
+                lines.append(f"⚠️ Scheduler may be stuck (last wake: {age_min}min ago)")
+        except (ValueError, OSError):
+            pass
+
     return "\n".join(lines)
 
 

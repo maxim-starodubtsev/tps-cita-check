@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -63,7 +65,14 @@ def _read_state(state_path: Path) -> dict:
 
 def _write_state(state_path: Path, state: dict) -> None:
     state_path.parent.mkdir(parents=True, exist_ok=True)
-    state_path.write_text(json.dumps(state))
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=str(state_path.parent), suffix=".tmp")
+    try:
+        with os.fdopen(tmp_fd, "w") as f:
+            json.dump(state, f)
+        os.replace(tmp_path, str(state_path))
+    except BaseException:
+        os.unlink(tmp_path)
+        raise
 
 
 def _fmt_run_status(status: str) -> str:

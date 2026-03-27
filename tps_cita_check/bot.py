@@ -50,7 +50,8 @@ def get_updates(token: str, offset: int, timeout: int = 0) -> list[dict]:
         with urllib.request.urlopen(url, timeout=10) as resp:
             data = json.loads(resp.read())
             return data.get("result", [])
-    except Exception:
+    except Exception as exc:
+        _log.warning("get_updates failed: %s", _mask_token(str(exc), token))
         return []
 
 
@@ -58,8 +59,8 @@ def _read_state(state_path: Path) -> dict:
     if state_path.exists():
         try:
             return json.loads(state_path.read_text())
-        except Exception:
-            pass
+        except Exception as exc:
+            _log.warning("Failed to read state from %s: %s", state_path, exc)
     return {}
 
 
@@ -104,8 +105,8 @@ def _read_run_history(run_history_path: Path) -> list[dict]:
     if run_history_path.exists():
         try:
             return json.loads(run_history_path.read_text())
-        except Exception:
-            pass
+        except Exception as exc:
+            _log.warning("Failed to read run history from %s: %s", run_history_path, exc)
     return []
 
 

@@ -424,6 +424,10 @@ def run_check(*, config: CheckerConfig, logger, steps: Iterable[Step] | None = N
     start_office_idx = 0
     merged_office_results: tuple = ()
 
+    # Initialise summary so the fallback return after the loop is safe even if
+    # max_attempts == 0 (should not happen, but prevents UnboundLocalError).
+    summary = RunSummary(ok=False, results=[])
+
     for attempt in range(1, max_attempts + 1):
         summary = _run_once(
             config=config,
@@ -486,8 +490,8 @@ def run_check(*, config: CheckerConfig, logger, steps: Iterable[Step] | None = N
     _log_run_summary(logger, config, merged_office_results)
     return RunSummary(
         ok=False,
-        results=summary.results,  # type: ignore[possibly-undefined]
-        found_cita_office=summary.found_cita_office,  # type: ignore[possibly-undefined]
+        results=summary.results,
+        found_cita_office=summary.found_cita_office,
         office_results=merged_office_results,
     )
 

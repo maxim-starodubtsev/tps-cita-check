@@ -17,38 +17,34 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-STATE_FILE="$PROJECT_DIR/artifacts/scheduler_state.json"
+ARTIFACTS_DIR="$PROJECT_DIR/artifacts"
+STATE_FILE="$ARTIFACTS_DIR/scheduler_state.json"
 
 cd "$PROJECT_DIR"
 source .venv/bin/activate
-mkdir -p artifacts
+mkdir -p "$ARTIFACTS_DIR"
+
+# OPS-3: Write a wake timestamp so /status can detect a stuck scheduler.
+date +%s > "$ARTIFACTS_DIR/last_scheduler_wake.txt"
 
 # Process pending Telegram bot commands (non-blocking, ~60s latency)
 python3 process_bot_commands.py 2>/dev/null || true
 
 # --- Resume command ---
 if [[ "${1:-}" == "--resume" ]]; then
-    python3 -c "
-import json, os, time
-f = '$STATE_FILE'
-if os.path.exists(f):
-    s = json.load(open(f))
-    s.pop('paused', None)
-    s.pop('paused_ts', None)
-    s.pop('paused_reason', None)
-    s['net_retries'] = 0
-    s['next_run_ts'] = 0
-    s['started_ts'] = int(time.time())
-    s['started_by'] = 'manual_cli'
-    json.dump(s, open(f, 'w'))
-    print('[scheduler] Resumed — next wake-up will run immediately.')
-else:
-    print('[scheduler] No state file — nothing to resume.')
-"
+    if [[ -f "$STATE_FILE" ]]; then
+        python3 "$SCRIPT_DIR/state_utils.py" write "$STATE_FILE" \
+            paused= paused_ts= paused_reason= \
+            net_retries=0 next_run_ts=0 \
+            started_ts="$(date +%s)" started_by=manual_cli
+        echo '[scheduler] Resumed — next wake-up will run immediately.'
+    else
+        echo '[scheduler] No state file — nothing to resume.'
+    fi
     exit 0
 fi
 
-# --- Load state ---
+# --- Load state (single Python invocation via state_utils.py) ---
 consecutive_waf=0
 run_counter=0
 next_run_ts=0
@@ -56,11 +52,7 @@ paused=0
 net_retries=0
 
 if [[ -f "$STATE_FILE" ]]; then
-    consecutive_waf=$(python3 -c "import json; print(json.load(open('$STATE_FILE')).get('consecutive_waf', 0))" 2>/dev/null || echo 0)
-    run_counter=$(python3 -c "import json; print(json.load(open('$STATE_FILE')).get('run_counter', 0))" 2>/dev/null || echo 0)
-    next_run_ts=$(python3 -c "import json; print(json.load(open('$STATE_FILE')).get('next_run_ts', 0))" 2>/dev/null || echo 0)
-    paused=$(python3 -c "import json; print(1 if json.load(open('$STATE_FILE')).get('paused') else 0)" 2>/dev/null || echo 0)
-    net_retries=$(python3 -c "import json; print(json.load(open('$STATE_FILE')).get('net_retries', 0))" 2>/dev/null || echo 0)
+    eval "$(python3 "$SCRIPT_DIR/state_utils.py" read "$STATE_FILE" 2>/dev/null)" || true
 fi
 
 # --- Paused? ---
@@ -98,13 +90,9 @@ if [[ "$consecutive_waf" -gt 0 ]]; then
     if [[ $((run_counter & skip_mask)) -ne 0 ]]; then
         next_run_fmt=$(date -r "$next_run_ts" '+%H:%M:%S')
         echo "[scheduler] Skipping run $run_counter (WAF backoff: $consecutive_waf blocks, next at $next_run_fmt)"
-        python3 -c "
-import json, os
-f = '$STATE_FILE'
-s = json.load(open(f)) if os.path.exists(f) else {}
-s.update({'consecutive_waf': $consecutive_waf, 'run_counter': $run_counter, 'next_run_ts': $next_run_ts, 'net_retries': 0})
-json.dump(s, open(f, 'w'))
-"
+        python3 "$SCRIPT_DIR/state_utils.py" write "$STATE_FILE" \
+            consecutive_waf="$consecutive_waf" run_counter="$run_counter" \
+            next_run_ts="$next_run_ts" net_retries=0
         exit 0
     fi
 fi
@@ -113,7 +101,7 @@ fi
 echo "[scheduler] Run $run_counter (CET hour=$cet_hour, next in ${next_interval}min, WAF=$consecutive_waf, net_retries=$net_retries)"
 
 EXIT_CODE=0
-python3 appointment_checker.py --verbose 2>&1 | tee artifacts/scheduler_last_run.log || EXIT_CODE=$?
+python3 appointment_checker.py --verbose 2>&1 | tee "$ARTIFACTS_DIR/scheduler_last_run.log" || EXIT_CODE=$?
 
 # --- Analyze result ---
 should_pause=0
@@ -135,7 +123,7 @@ elif [[ "$EXIT_CODE" -eq 2 ]]; then
     pause_reason="cita_found"
     echo "[scheduler] PAUSED — cita may be available. Resume with: bash scheduler/run.sh --resume"
 
-elif grep -qi "ERR_INTERNET_DISCONNECTED\|ERR_NAME_NOT_RESOLVED\|ERR_NETWORK_CHANGED\|ERR_CONNECTION_REFUSED\|nodename nor servname" artifacts/scheduler_last_run.log 2>/dev/null; then
+elif grep -qi "ERR_INTERNET_DISCONNECTED\|ERR_NAME_NOT_RESOLVED\|ERR_NETWORK_CHANGED\|ERR_CONNECTION_REFUSED\|nodename nor servname" "$ARTIFACTS_DIR/scheduler_last_run.log" 2>/dev/null; then
     # Network error — escalating retry (1min, 2min, ..., 15min).
     net_retries=$((net_retries + 1))
     consecutive_waf=0
@@ -152,7 +140,7 @@ elif grep -qi "ERR_INTERNET_DISCONNECTED\|ERR_NAME_NOT_RESOLVED\|ERR_NETWORK_CHA
         echo "[scheduler] Network error (retry $net_retries/15, next at $next_run_fmt in ${net_retries}min)"
     fi
 
-elif grep -qi "url was rejected\|fortigate\|no ofrece el servicio\|sesión ha caducado\|error en el sistema" artifacts/scheduler_last_run.log 2>/dev/null; then
+elif grep -qi "url was rejected\|fortigate\|no ofrece el servicio\|sesión ha caducado\|error en el sistema" "$ARTIFACTS_DIR/scheduler_last_run.log" 2>/dev/null; then
     # Transient site error (WAF, session expired, no-service, system error page) — continue scheduling.
     consecutive_waf=$((consecutive_waf + 1))
     net_retries=0
@@ -169,39 +157,26 @@ else
     echo "[scheduler] PAUSED — run failed. Resume with: bash scheduler/run.sh --resume"
 fi
 
-# Save state.
+# Save state atomically.
 if [[ "$should_pause" -eq 1 ]]; then
-    python3 -c "
-import json, os, time
-f = '$STATE_FILE'
-s = json.load(open(f)) if os.path.exists(f) else {}
-s.update({'consecutive_waf': $consecutive_waf, 'run_counter': $run_counter, 'next_run_ts': $next_run_ts, 'paused': True, 'net_retries': $net_retries, 'paused_ts': int(time.time()), 'paused_reason': '$pause_reason'})
-json.dump(s, open(f, 'w'))
-"
+    python3 "$SCRIPT_DIR/state_utils.py" write "$STATE_FILE" \
+        consecutive_waf="$consecutive_waf" run_counter="$run_counter" \
+        next_run_ts="$next_run_ts" paused=true net_retries="$net_retries" \
+        paused_ts="$(date +%s)" paused_reason="$pause_reason"
 else
-    python3 -c "
-import json, os
-f = '$STATE_FILE'
-s = json.load(open(f)) if os.path.exists(f) else {}
-s.pop('paused', None)
-s.pop('paused_ts', None)
-s.pop('paused_reason', None)
-s.update({'consecutive_waf': $consecutive_waf, 'run_counter': $run_counter, 'next_run_ts': $next_run_ts, 'net_retries': $net_retries})
-json.dump(s, open(f, 'w'))
-"
+    python3 "$SCRIPT_DIR/state_utils.py" write "$STATE_FILE" \
+        consecutive_waf="$consecutive_waf" run_counter="$run_counter" \
+        next_run_ts="$next_run_ts" net_retries="$net_retries" \
+        paused= paused_ts= paused_reason=
 fi
-python3 -c "
-import json, os, time
-f = 'artifacts/run_history.json'
-h = json.load(open(f)) if os.path.exists(f) else []
-offices_f = 'artifacts/last_run_offices.json'
-offices = json.load(open(offices_f)) if os.path.exists(offices_f) else []
-h.append({'ts': int(time.time()), 'status': '$run_status', 'offices': offices})
-json.dump(h[-20:], open(f, 'w'))
-"
 
-# --- Cleanup old screenshot dirs and truncate logs ---
-SCREENSHOTS_DIR="$PROJECT_DIR/artifacts/screenshots"
+# Append run to history.
+python3 "$SCRIPT_DIR/state_utils.py" append-history \
+    "$ARTIFACTS_DIR/run_history.json" "$run_status" \
+    "$ARTIFACTS_DIR/last_run_offices.json"
+
+# --- Cleanup old screenshot dirs ---
+SCREENSHOTS_DIR="$ARTIFACTS_DIR/screenshots"
 if [[ -d "$SCREENSHOTS_DIR" ]]; then
     # Keep last 3 screenshot dirs on success, last 10 on failure.
     if [[ "$EXIT_CODE" -eq 0 ]]; then
@@ -215,12 +190,5 @@ if [[ -d "$SCREENSHOTS_DIR" ]]; then
         rm -rf "$SCREENSHOTS_DIR/$dir"
     done
 fi
-
-# Truncate log files to ~10 runs (~600 lines).
-for logfile in "$PROJECT_DIR/artifacts/launchd_stdout.log" "$PROJECT_DIR/artifacts/run.log"; do
-    if [[ -f "$logfile" ]] && [[ $(wc -l < "$logfile") -gt 600 ]]; then
-        tail -600 "$logfile" > "$logfile.tmp" && mv "$logfile.tmp" "$logfile"
-    fi
-done
 
 exit 0

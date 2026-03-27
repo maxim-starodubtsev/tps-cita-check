@@ -60,15 +60,26 @@ def human_delay(page, min_ms: int, max_ms: int) -> int:
     return delay
 
 
+RETRIABLE_PATTERNS = (
+    "url was rejected",
+    "fortigate",
+    "sesión ha caducado",
+    "no ofrece el servicio",
+    "error en el sistema",
+    "timeout",
+)
+
+
+def is_retriable_error(error_text: str) -> bool:
+    """Return True if *error_text* matches any known transient/retriable error pattern."""
+    text = (error_text or "").lower()
+    return any(p in text for p in RETRIABLE_PATTERNS)
+
+
 def _is_waf_error(exc: Exception) -> bool:
+    # "timeout" is retriable at step level but not a WAF/block signal.
     msg = str(exc).lower()
-    return (
-        "url was rejected" in msg
-        or "fortigate" in msg
-        or "sesión ha caducado" in msg
-        or "no ofrece el servicio" in msg
-        or "error en el sistema" in msg
-    )
+    return any(p in msg for p in RETRIABLE_PATTERNS if p != "timeout")
 
 
 def retry_step(fn, *, attempts: int, backoff_ms: int, logger, step_id: str, label: str):
@@ -153,8 +164,10 @@ def run_step_safely(step_id: str, title: str, ctx, inner_fn):
 
 __all__ = [
     "PlaywrightTimeout",
+    "RETRIABLE_PATTERNS",
     "ensure_not_rejected",
     "human_delay",
+    "is_retriable_error",
     "is_url_rejected",
     "is_fortigate_block",
     "is_no_cita_previa_service",

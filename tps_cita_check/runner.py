@@ -16,7 +16,7 @@ from .context import RunContext
 from .screenshot_utils import baseline_path_for
 from .stealth import apply_stealth_sync
 from .step_framework import Step, StepResult, StepStatus
-from .steps.common import human_delay
+from .steps.common import human_delay, is_retriable_error
 from .steps.step0_load import Step0Load
 from .steps.step1_verify_province import Step1VerifyProvince
 from .steps.step2_select_office import Step2SelectOffice
@@ -84,15 +84,7 @@ def _is_retriable_failure(res: StepResult) -> bool:
     """
     if res.status == StepStatus.OK:
         return False
-    details = (res.error_details or "").lower()
-    return (
-        "url was rejected" in details
-        or "fortigate" in details
-        or "sesión ha caducado" in details
-        or "no ofrece el servicio" in details
-        or "error en el sistema" in details
-        or "timeout" in details
-    )
+    return is_retriable_error(res.error_details)
 
 
 def _navigate_back_to_province(page, config: CheckerConfig, logger) -> bool:

@@ -207,6 +207,11 @@ def _run_once(
         # Extensions require a real browser. Use --headless=new (Chrome 112+) for
         # invisible mode with full extension support; fall back to visible for debugging.
         headless_args = [] if not config.headless else ["--headless=new"]
+        # headless=False is intentional here: the Playwright API parameter must be
+        # False so the persistent context initialises in "headed" mode, which is
+        # required for Chrome extensions. When config.headless is True, we inject
+        # --headless=new via args to get Chrome's "new headless" mode that still
+        # supports extensions. The CLI flag overrides the API parameter.
         context = p.chromium.launch_persistent_context(
             profile_dir,
             headless=False,

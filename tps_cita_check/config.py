@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -23,10 +23,10 @@ class CheckerConfig:
     tramite_contains: str = "TARJETA CONFLICTO UCRANIA"
 
     # Personal data (for later steps; kept configurable now).
-    nie: str = ""
-    full_name: str = ""
-    email: str = ""
-    phone: str = ""
+    nie: str = field(default="", repr=False)
+    full_name: str = field(default="", repr=False)
+    email: str = field(default="", repr=False)
+    phone: str = field(default="", repr=False)
 
     # Artifacts
     artifacts_dir: Path = Path("artifacts")
@@ -70,8 +70,8 @@ class CheckerConfig:
     run_retry_base_backoff_s: float = 10.0
 
     # Telegram notifications
-    telegram_bot_token: str = ""
-    telegram_chat_id: str = ""
+    telegram_bot_token: str = field(default="", repr=False)
+    telegram_chat_id: str = field(default="", repr=False)
 
     @property
     def resolved_extension_dir(self) -> Path:
